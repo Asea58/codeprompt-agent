@@ -1,0 +1,7 @@
+# Core deps for codeprompt Agent (MVP)
+# Config is JSON-based, so no PyYAML needed.
+openai>=1.0      # used to talk to DeepSeek (OpenAI-compatible API)
+numpy            # required by generated physics code
+scipy            # required by generated physics code
+gradio>=4.0      # web frontend (app.py)
+huggingface_hub<1.0  # gradio 4.x needs HfFolder, removed in hub 1.0 (pin to avoid ImportError)

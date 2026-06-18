@@ -1,0 +1,20 @@
+{
+  "provider": "deepseek",
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-chat",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "temperature": 0.7,
+      "max_tokens": 8000
+    },
+    "deepseek-reasoner": {
+      "base_url": "https://api.deepseek.com",
+      "model": "deepseek-reasoner",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "temperature": 0.6,
+      "max_tokens": 8000
+    }
+  },
+  "_comment": "切换模型：改 provider 字段为 providers 下的某个 key。新增模型：在 providers 里加一条。api_key 永远从环境变量读取，不写进文件。"
+}
