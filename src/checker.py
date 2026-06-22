@@ -63,6 +63,66 @@ def _count_list_items(text):
     return n
 
 
+# Pull every floating-point literal out of a chunk of prose (for answer matching).
+_NUMBER_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+
+def _extract_numbers(text):
+    """Return all numeric literals appearing in `text` as floats."""
+    out = []
+    for tok in _NUMBER_RE.findall(text or ""):
+        try:
+            out.append(float(tok))
+        except ValueError:
+            pass
+    return out
+
+
+def _answer_matches(numbers, answer, rel_tol=0.02):
+    """True if any value in `numbers` is within rel_tol of `answer`."""
+    if answer is None:
+        return True  # nothing to compare against
+    for n in numbers:
+        denom = abs(answer) if answer != 0 else 1.0
+        if abs(n - answer) <= rel_tol * denom:
+            return True
+    return False
+
+
+# Integration-interval endpoints written as (a, b) / [a, b] pairs in the code —
+# used to flag answers that are merely a fallback to the span boundary.
+_SPAN_RE = re.compile(
+    r"[\[(]\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*,"
+    r"\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*[\])]"
+)
+
+
+def _integration_bounds(code):
+    """Collect numeric endpoints of (a, b) / [a, b] literals in the code.
+
+    Returns the non-zero endpoints (0 is a common, legitimate start time and
+    would cause false positives against answers near zero)."""
+    bounds = []
+    for lo, hi in _SPAN_RE.findall(code or ""):
+        for tok in (lo, hi):
+            try:
+                v = float(tok)
+            except ValueError:
+                continue
+            if v != 0:
+                bounds.append(v)
+    return bounds
+
+
+def _has_huge_magnitude(stdout, threshold=1e8):
+    """True if any number printed to stdout exceeds `threshold` in magnitude
+    (a sign of numerical blow-up / non-convergent root finding)."""
+    for v in _extract_numbers(stdout):
+        if abs(v) > threshold:
+            return True
+    return False
+
+
 def check(parsed, exec_result, reason_key, mock=False, judge_mode="block"):
     """Return (passed: bool, findings: list[Finding]).
 
@@ -154,7 +214,43 @@ def check(parsed, exec_result, reason_key, mock=False, judge_mode="block"):
     elif abs(a) == float("inf"):
         findings.append(Finding("fail", "答案为无穷大（数值发散）"))
 
-    # --- 8. optional LLM semantic judge ---
+    # --- 7b. 答案疑似为积分区间端点伪值 ---
+    # 若 ANSWER 恰好等于代码里某个积分区间端点（如 t_span=(0,2000) 的 2000），
+    # 多半是"事件未在区间内发生、回退到区间端点"的伪值，而非真实求解结果。
+    # 这是客观错误（答案就是错的），故无论 judge 模式一律 fail，触发重试。
+    bounds = _integration_bounds(code)
+    if a == a and abs(a) != float("inf") and \
+            any(abs(a - b) <= max(1e-9, 1e-6 * abs(b)) for b in bounds):
+        findings.append(Finding(
+            "fail",
+            f"答案 {a} 恰好等于代码中的积分区间端点，疑似事件未在区间内发生而回退为"
+            f"端点伪值。应延长积分区间并用 solve_ivp 的 events 精确捕捉事件时刻，"
+            f"事件未发生时应 raise 而非返回端点。",
+        ))
+
+    # --- 7c. 数值发散迹象：stdout 出现极大量级数值 ---
+    # 残差/状态量量级爆炸（|x|>1e8）通常意味着求根/积分发散、未真正收敛。
+    if _has_huge_magnitude(exec_result.stdout, threshold=1e8):
+        sev = "fail" if judge_mode == "block" else "warn"
+        findings.append(Finding(
+            sev,
+            "运行输出中出现极大量级数值（|值|>1e8），疑似数值发散或求根未收敛，"
+            "请改用更稳健的求解器（如 solve_bvp / brentq 先扫描定界）并校验收敛。",
+        ))
+
+    # --- 8. model-claimed answer must match the EXECUTED answer ---
+    # The final output reconstructs checklists from exec_result, but a mismatch
+    # here means the model's prose disagreed with reality — report it honestly.
+    # warn by default (advisory); fail under judge_mode='block' (gate + retry).
+    claim_text = parsed.get("checklist_new", "") or parsed.get("i_checklist", "")
+    if claim_text.strip() and not _answer_matches(_extract_numbers(claim_text), a):
+        sev = "fail" if judge_mode == "block" else "warn"
+        findings.append(Finding(
+            sev,
+            f"模型 checklist 中未出现与实跑答案 {a} 一致的数值，输出已按实跑值重建",
+        ))
+
+    # --- 9. optional LLM semantic judge ---
     if not mock and judge_mode != "off":
         verdict = _llm_judge(parsed, exec_result, reason_key)
         if verdict and verdict.get("severity"):
@@ -186,18 +282,25 @@ def _llm_judge(parsed, exec_result, reason_key):
             "你是物理编程题的语义审核员。代码已经在沙箱中真实运行成功并得到了数值答案，"
             "因此你【绝对不要】去猜测代码会崩溃、数组越界、运行报错或有实现 bug——"
             "执行结果就是事实，这些都已被证否。\n"
-            "你只判断三件事：(1) 题目是否真正体现了指定考点的数学结构；"
+            "你判断四件事：(1) 题目是否真正体现了指定考点的数学结构；"
             "(2) 题面、考点、代码三者是否一致（例如声称打靶法就该是边值问题）；"
-            "(3) 题目是否确实无法手算、必须编程。\n"
-            "不要纠结无关紧要的细节（如取中点用 N//2 这类实现选择）。"
-            "只有当出现【实质性的考点/题面/代码不一致】或【其实可以手算】时才判 FAIL。\n"
+            "(3) 题目是否确实无法手算、必须编程；"
+            "(4) 【物理合理性】答案数值在物理上是否可能——结合题面给定的物理约束判断，"
+            "例如：冷却/换热问题中温度必落在初温与环境温度之间，不能低于环境温度；"
+            "答案恰好等于积分区间端点（如 t_span 上限）往往是'事件未在区间内发生而回退端点'"
+            "的伪值；求根/打靶的残差应真正收敛到 0，而非在极大量级间振荡。\n"
+            "不要纠结无关紧要的实现细节（如取中点用 N//2）。"
+            "只有当出现【考点/题面/代码实质不一致】【其实可以手算】或【答案物理上不可能/为"
+            "积分端点伪值/数值未收敛】时才判 FAIL。\n"
             "只输出一行：PASS，或 FAIL:<简短原因>。"
         )
+        checks_txt = "\n".join(getattr(exec_result, "checks", []) or [])
         user_p = (
             f"指定考点：{reason['label']}\n"
             f"要求的数学结构：{reason['math_structure']}\n"
             f"必须满足：{reason.get('must_have', [])}\n"
-            f"代码已成功执行，得到答案：{answer}\n\n"
+            f"代码已成功执行，得到答案：{answer}\n"
+            f"代码打印的中间关键结果(CHECK)：\n{checks_txt}\n\n"
             f"题面：\n{parsed.get('query','')}\n\n"
             f"代码：\n{parsed.get('code','')}\n"
         )
