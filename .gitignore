@@ -12,3 +12,6 @@ venv/
 output/
 runs/
 *.tmp.py
+
+# macOS
+.DS_Store
