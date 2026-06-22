@@ -125,8 +125,34 @@ def render_markdown(result, subject, reason_key):
         run_output=run_output,
         answer=answer_val,
         answer_unit=parsed.get("answer_unit", ""),
+        i_checklist=_render_i_checklist(parsed, exec_result),
+        checklist_new=parsed.get("checklist_new", "").strip() or "(无)",
         check_report=checker.render_report(result.findings),
     )
+
+
+def _render_i_checklist(parsed, exec_result):
+    """Render the I-checklist.
+
+    The model proposes the checklist in <I_CHECKLIST>; the中间关键结果 should match
+    the `CHECK:` lines the code actually printed. Since执行值才是事实，附上代码实跑出的
+    CHECK 行作为权威中间结果，模型清单作为措辞参考。
+    """
+    model_list = (parsed.get("i_checklist") or "").strip()
+    checks = list(getattr(exec_result, "checks", []) or []) if exec_result else []
+
+    if model_list and not checks:
+        return model_list
+    if not model_list and not checks:
+        return "(无)"
+
+    parts = []
+    if model_list:
+        parts.append(model_list)
+    if checks:
+        executed = "\n".join(f"- {c}" for c in checks)
+        parts.append("**（以下中间关键结果由代码真实运行得出）**\n" + executed)
+    return "\n\n".join(parts)
 
 
 def save(result, subject, reason_key, output_dir=None):

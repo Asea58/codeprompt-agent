@@ -60,7 +60,10 @@ $v_0 = 35.0\\,\\text{m/s}$、仰角 $\\theta_0 = 45^\\circ$ 从地面发射。�
 
 **问题：** 求抛体的水平射程（落地点与发射点的水平距离），单位 m，保留两位小数。
 
-**要求：** 使用 Python 语言解答本题。
+---
+**要求：**
+1. 使用Python语言（或其他语言）解答本题；
+2. 完整写出代码的实现步骤。
 </QUERY>
 
 <APPROACH>
@@ -90,19 +93,40 @@ def ode(t, s):
     k = b * v / m
     return [vx, vy, -k * vx, -g - k * vy]
 
+def apex(t, s):
+    return s[3]
+apex.direction = -1
+
 def hit_ground(t, s):
     return s[1]
 hit_ground.terminal = True
 hit_ground.direction = -1
 
 sol = solve_ivp(ode, [0, 20], [0.0, 0.0, v0*np.cos(theta0), v0*np.sin(theta0)],
-                events=hit_ground, max_step=1e-3, rtol=1e-9, atol=1e-12)
+                events=[apex, hit_ground], max_step=1e-3, rtol=1e-9, atol=1e-12)
 
+t_apex = sol.t_events[0][0]
+y_apex = sol.y_events[0][0][1]
+t_land = sol.t_events[1][0]
 x_range = sol.y[0, -1]
+
 print(f"水平射程: {x_range:.2f} m")
+print(f"CHECK: 抛体在 t={t_apex:.2f} s 到达最高点，最大高度为 {y_apex:.2f} m。")
+print(f"CHECK: 抛体在 t={t_land:.2f} s 落地。")
 print(f"ANSWER: {x_range:.2f}")
 </CODE>
 
 <ANSWER_UNIT>
 水平射程，单位 m
-</ANSWER_UNIT>"""
+</ANSWER_UNIT>
+
+<I_CHECKLIST>
+- 抛体的水平射程约为 49.92 m。
+- 抛体在约 t=2.30 s 到达轨迹最高点，最大高度约 25.6 m。
+- 抛体在约 t=4.66 s 时落回地面。
+- 空气阻力使射程显著小于无阻力理想情形。
+</I_CHECKLIST>
+
+<CHECKLIST_NEW>
+- 抛体的水平射程约为 49.92 m。
+</CHECKLIST_NEW>"""

@@ -52,6 +52,17 @@ class Finding:
         return f"{tag}: {self.message}"
 
 
+def _count_list_items(text):
+    """Count markdown bullet items (lines starting with -, *, • or a number)."""
+    if not text:
+        return 0
+    n = 0
+    for line in text.splitlines():
+        if re.match(r"\s*(?:[-*•]|\d+[.)、])\s+", line):
+            n += 1
+    return n
+
+
 def check(parsed, exec_result, reason_key, mock=False, judge_mode="block"):
     """Return (passed: bool, findings: list[Finding]).
 
@@ -81,9 +92,46 @@ def check(parsed, exec_result, reason_key, mock=False, judge_mode="block"):
     if "python" not in query.lower():
         findings.append(Finding("warn", "题面未明确要求使用 Python"))
 
+    # --- 3b. skill 要求：题面末尾应有"完整写出代码的实现步骤"类编程解答标注 ---
+    if not re.search(r"实现步骤|解答本题|编写代码|实现代码", query):
+        findings.append(Finding("warn", "题面末尾缺少编程解答要求（应标注：使用Python解答 + 完整写出代码实现步骤）"))
+
+    # --- 3c. skill 要求：题面不可依赖图片 ---
+    if re.search(r"如图|见图|下图|上图|图\s*\d|!\[", query):
+        findings.append(Finding("warn", "题面疑似依赖图片（skill 要求不得含/依赖图片）"))
+
     # --- 4. query should state a decimal-place / precision requirement ---
     if not re.search(r"保留|精确|小数", query):
         findings.append(Finding("warn", "题面未规定保留小数位（答案精度不明确）"))
+
+    # --- 4b. skill 要求：精度不可过高（如"小数点后6位"），保留 1-2 位 ---
+    m_prec = re.search(r"小数(?:点后|位)?\s*(\d+)\s*位", query)
+    if m_prec and int(m_prec.group(1)) > 2:
+        findings.append(Finding(
+            "warn", f"题面要求保留 {m_prec.group(1)} 位小数，精度过高（skill 要求 1-2 位）",
+        ))
+
+    # --- 4c. skill 要求：运行时间 < 5 秒 ---
+    if getattr(exec_result, "elapsed", None) is not None and exec_result.elapsed > 5.0:
+        findings.append(Finding(
+            "warn", f"代码运行耗时 {exec_result.elapsed:.1f}s，超过 5 秒（skill 要求 5 秒内）",
+        ))
+
+    # --- 4d. skill 要求：应打印中间关键结果（CHECK 行）供 I-checklist 使用 ---
+    n_checks = len(getattr(exec_result, "checks", []) or [])
+    if n_checks == 0:
+        findings.append(Finding("warn", "代码未打印任何 `CHECK:` 中间关键结果行（I-checklist 将缺中间项）"))
+
+    # --- 4e. skill 要求：I-checklist 条数 4-6 ---
+    i_items = _count_list_items(parsed.get("i_checklist", ""))
+    if i_items and not (4 <= i_items <= 6):
+        findings.append(Finding("warn", f"I-checklist 共 {i_items} 条，建议 4-6 条"))
+    elif not i_items:
+        findings.append(Finding("warn", "缺少 I-checklist"))
+
+    # --- 4f. skill 要求：checklist_new 第一部分必须是答案 ---
+    if not _count_list_items(parsed.get("checklist_new", "")):
+        findings.append(Finding("warn", "缺少 checklist_new（第一部分应为答案）"))
 
     # --- 5. numerical-method marker present? ---
     markers = _METHOD_MARKERS.get(reason_key, [])

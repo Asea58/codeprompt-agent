@@ -48,18 +48,23 @@ _TAGS = {
     "approach": "APPROACH",
     "code": "CODE",
     "answer_unit": "ANSWER_UNIT",
+    "i_checklist": "I_CHECKLIST",
+    "checklist_new": "CHECKLIST_NEW",
 }
+# Sections that must be present; the checklists are best-effort (don't hard-fail
+# generation if the model omits them — heuristics will warn instead).
+_REQUIRED = {"query", "approach", "code", "answer_unit"}
 # matches any opening tag — used by the fallback to know where a section ends
-_ANY_OPEN = r"<(?:QUERY|APPROACH|CODE|ANSWER_UNIT)>"
+_ANY_OPEN = r"<(?:QUERY|APPROACH|CODE|ANSWER_UNIT|I_CHECKLIST|CHECKLIST_NEW)>"
 
 
 def parse_output(raw):
-    """Extract the four tagged sections.
+    """Extract the tagged sections.
 
     Tolerant by design: if a section's closing tag is missing/mangled (a common
     LLM slip, e.g. dropping </QUERY>), fall back to capturing from the opening
-    tag up to the next opening tag (or end of text). Only raises if a section is
-    genuinely absent.
+    tag up to the next opening tag (or end of text). Only raises if a *required*
+    section is genuinely absent; the checklist sections default to "".
     """
     result = {}
     missing = []
@@ -74,7 +79,9 @@ def parse_output(raw):
         if m and m.group(1).strip():
             result[key] = m.group(1).strip()
             continue
-        missing.append(key)
+        result[key] = ""
+        if key in _REQUIRED:
+            missing.append(key)
 
     if missing:
         raise ValueError(

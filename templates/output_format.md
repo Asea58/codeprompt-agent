@@ -34,6 +34,18 @@
 
 ---
 
+## I-checklist
+
+{i_checklist}
+
+---
+
+## checklist_new
+
+{checklist_new}
+
+---
+
 ## 校验报告
 
 {check_report}
