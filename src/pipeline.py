@@ -126,7 +126,6 @@ def render_markdown(result, subject, reason_key):
         answer=answer_val,
         answer_unit=parsed.get("answer_unit", ""),
         i_checklist=_render_i_checklist(parsed, exec_result),
-        checklist_new=_render_checklist_new(parsed, exec_result),
         check_report=checker.render_report(result.findings),
     )
 
@@ -146,6 +145,37 @@ def _format_answer_line(parsed, exec_result, prefix):
 
 
 _NUM_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+# CHECK 行里若命中这些词，多半是求解器实现细节（迭代次数/步数/网格/容差…）或
+# 空泛无数值的描述——generation_prompt 已明令禁止，渲染时再兜底剔除一次。
+_IMPL_DETAIL_RE = re.compile(
+    r"迭代|步数|步长|网格|容差|收敛(?:了|到)|残差|调用|函数|solve_|数组|循环|次运算|个点"
+)
+
+# I-checklist 中间项（答案行之外）的条数上限——超出只保留最关键的前几条，
+# 与 generation_prompt「中间结果 4-6 条」一致，避免代码打印过多 CHECK 撑爆清单。
+_MAX_CHECK_ITEMS = 6
+
+
+def _clean_check_line(line):
+    """规整单条 CHECK 中间结果，使其满足 I-checklist 格式要求；不合格返回 None。
+
+    - 去掉可能残留的 `CHECK:`/`- ` 前缀与首尾空白；
+    - 丢弃不含任何数值的空泛描述；
+    - 丢弃明显是求解器实现细节（迭代次数/步数/网格/容差等）的行；
+    - 若不以句末标点结尾，补一个中文句号。
+    """
+    s = (line or "").strip()
+    s = re.sub(r"^(?:CHECK\s*[:：]\s*|-\s+)", "", s).strip()
+    if not s:
+        return None
+    if not _NUM_RE.search(s):          # 无数值 → 不是可核对的中间结果
+        return None
+    if _IMPL_DETAIL_RE.search(s):      # 实现细节 → 走题，剔除
+        return None
+    if s[-1] not in "。.！!":           # 补句号
+        s += "。"
+    return s
 
 
 def _restates_answer(check_line, answer):
@@ -170,6 +200,9 @@ def _render_i_checklist(parsed, exec_result):
     首条为权威答案（exec_result.answer），其后逐条为代码打印的 CHECK 中间关键结果。
     与答案数值重复的 CHECK 行会被剔除（答案只占一条）。模型在 <I_CHECKLIST> 里的猜测
     数值一律丢弃，避免"猜测段 + 实跑段"自相矛盾。仅当执行结果缺失时才回退模型原文。
+
+    对每条 CHECK 再做一次格式清洗（补句号、丢弃无数值/实现细节行），并把中间项截到
+    _MAX_CHECK_ITEMS 条，兜底保证 I-checklist 的格式与条数即使模型偶尔不听话也达标。
     """
     answer = exec_result.answer if exec_result else None
     checks = list(getattr(exec_result, "checks", []) or []) if exec_result else []
@@ -179,60 +212,21 @@ def _render_i_checklist(parsed, exec_result):
         # No execution facts to build from — fall back to whatever the model gave.
         return (parsed.get("i_checklist") or "").strip() or "(无)"
 
+    # 清洗每条中间结果：规整格式、剔除无数值/实现细节行。
+    cleaned = []
+    for c in checks:
+        cc = _clean_check_line(c)
+        if cc:
+            cleaned.append(cc)
+
     parts = []
     if answer_line:
         parts.append(answer_line)
         # drop CHECK lines that merely restate the final answer value
-        checks = [c for c in checks if not _restates_answer(c, answer)]
-    parts.extend(f"- {c}" for c in checks)
-    return "\n".join(parts)
-
-
-# 题面里"采用/使用 XXX法/方法"的指定算法 —— 用于补全 checklist_new 第二部分。
-_METHOD_RE = re.compile(r"(?:采用|使用|利用|通过|借助)\s*([一-鿿 A-Za-z_]{2,12}?法)")
-
-
-def _infer_method(query):
-    """If the query explicitly mandates a named method (打靶法/有限差分法/蒙特卡洛法
-    …), return it so checklist_new can record it; else None."""
-    if not query:
-        return None
-    m = _METHOD_RE.search(query)
-    return m.group(1).strip() if m else None
-
-
-def _render_checklist_new(parsed, exec_result):
-    """Render checklist_new with the answer forced to the EXECUTED value.
-
-    第一部分（答案）用 exec_result.answer 重建，确保与 `## 答案` 一致；第二部分（指定
-    解题方法）：优先保留模型 <CHECKLIST_NEW> 中除首条外的条目；若模型漏写但题面明确
-    指定了某算法，则据题面补一条。
-    """
-    answer_line = _format_answer_line(parsed, exec_result, prefix="问题的答案：")
-    model_text = (parsed.get("checklist_new") or "").strip()
-
-    if answer_line is None:
-        # 无实跑答案：退回模型原文，仍优于凭空。
-        return model_text or "(无)"
-
-    # 模型清单里除首条（答案）外的其余 `- ` 条目 = 指定解题方法部分，原样保留。
-    extra_items = []
-    seen_first = False
-    for line in model_text.splitlines():
-        if re.match(r"\s*-\s+", line):
-            if not seen_first:
-                seen_first = True  # skip the model's (possibly wrong) answer line
-                continue
-            extra_items.append(line.strip())
-
-    # 模型漏写方法、但题面明确指定了算法 → 据题面补一条。
-    if not extra_items:
-        method = _infer_method(parsed.get("query", ""))
-        if method:
-            extra_items.append(f"- 指定的解题方法：{method}。")
-
-    parts = [answer_line]
-    parts.extend(extra_items)
+        cleaned = [c for c in cleaned if not _restates_answer(c, answer)]
+    # 中间结果截断到上限（最多 6 条）；答案单独 1 条，不计入此上限。
+    cleaned = cleaned[:_MAX_CHECK_ITEMS]
+    parts.extend(f"- {c}" for c in cleaned)
     return "\n".join(parts)
 
 

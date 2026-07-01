@@ -177,21 +177,29 @@ def check(parsed, exec_result, reason_key, mock=False, judge_mode="block"):
             "warn", f"代码运行耗时 {exec_result.elapsed:.1f}s，超过 5 秒（skill 要求 5 秒内）",
         ))
 
-    # --- 4d. skill 要求：应打印中间关键结果（CHECK 行）供 I-checklist 使用 ---
-    n_checks = len(getattr(exec_result, "checks", []) or [])
-    if n_checks == 0:
-        findings.append(Finding("warn", "代码未打印任何 `CHECK:` 中间关键结果行（I-checklist 将缺中间项）"))
+    # --- 4d. skill 要求：应打印 4-6 条中间关键结果（CHECK 行）供 I-checklist 使用 ---
+    # 统计"清洗后仍合格"的 CHECK 条数（去掉无数值/实现细节行），更贴近最终 md 里的实际条数。
+    # 延迟导入 pipeline，避免与其 `from . import checker` 形成模块级循环导入。
+    from . import pipeline
+    raw_checks = list(getattr(exec_result, "checks", []) or [])
+    good_checks = [c for c in raw_checks if pipeline._clean_check_line(c)]
+    if not good_checks:
+        findings.append(Finding(
+            "warn",
+            "代码未打印任何合格的 `CHECK:` 中间关键结果行（需含数值、非实现细节；"
+            "I-checklist 将缺中间项）",
+        ))
+    elif not (4 <= len(good_checks) <= 6):
+        findings.append(Finding(
+            "warn",
+            f"合格的 CHECK 中间结果共 {len(good_checks)} 条（期望 4-6 条）；"
+            f"原始打印 {len(raw_checks)} 条，其余为无数值/实现细节行已被剔除",
+        ))
 
-    # --- 4e. skill 要求：I-checklist 条数 4-6 ---
-    i_items = _count_list_items(parsed.get("i_checklist", ""))
-    if i_items and not (4 <= i_items <= 6):
-        findings.append(Finding("warn", f"I-checklist 共 {i_items} 条，建议 4-6 条"))
-    elif not i_items:
+    # --- 4e. skill 要求：模型应给出 I-checklist（总条数不再限制——最终 md 由执行事实
+    # 重建，答案固定 1 条 + 中间 4-6 条，条数由 4d 段按合格 CHECK 数把关）---
+    if not _count_list_items(parsed.get("i_checklist", "")):
         findings.append(Finding("warn", "缺少 I-checklist"))
-
-    # --- 4f. skill 要求：checklist_new 第一部分必须是答案 ---
-    if not _count_list_items(parsed.get("checklist_new", "")):
-        findings.append(Finding("warn", "缺少 checklist_new（第一部分应为答案）"))
 
     # --- 5. numerical-method marker present? ---
     markers = _METHOD_MARKERS.get(reason_key, [])
@@ -239,10 +247,10 @@ def check(parsed, exec_result, reason_key, mock=False, judge_mode="block"):
         ))
 
     # --- 8. model-claimed answer must match the EXECUTED answer ---
-    # The final output reconstructs checklists from exec_result, but a mismatch
-    # here means the model's prose disagreed with reality — report it honestly.
-    # warn by default (advisory); fail under judge_mode='block' (gate + retry).
-    claim_text = parsed.get("checklist_new", "") or parsed.get("i_checklist", "")
+    # The final output reconstructs the I-checklist from exec_result, but a
+    # mismatch here means the model's prose disagreed with reality — report it
+    # honestly. warn by default (advisory); fail under judge_mode='block'.
+    claim_text = parsed.get("i_checklist", "")
     if claim_text.strip() and not _answer_matches(_extract_numbers(claim_text), a):
         sev = "fail" if judge_mode == "block" else "warn"
         findings.append(Finding(

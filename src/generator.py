@@ -49,13 +49,12 @@ _TAGS = {
     "code": "CODE",
     "answer_unit": "ANSWER_UNIT",
     "i_checklist": "I_CHECKLIST",
-    "checklist_new": "CHECKLIST_NEW",
 }
 # Sections that must be present; the checklists are best-effort (don't hard-fail
 # generation if the model omits them — heuristics will warn instead).
 _REQUIRED = {"query", "approach", "code", "answer_unit"}
 # matches any opening tag — used by the fallback to know where a section ends
-_ANY_OPEN = r"<(?:QUERY|APPROACH|CODE|ANSWER_UNIT|I_CHECKLIST|CHECKLIST_NEW)>"
+_ANY_OPEN = r"<(?:QUERY|APPROACH|CODE|ANSWER_UNIT|I_CHECKLIST)>"
 
 
 def parse_output(raw):

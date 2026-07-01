@@ -40,12 +40,6 @@
 
 ---
 
-## checklist_new
-
-{checklist_new}
-
----
-
 ## 校验报告
 
 {check_report}

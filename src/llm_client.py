@@ -125,8 +125,4 @@ print(f"ANSWER: {x_range:.2f}")
 - 抛体在约 t=2.30 s 到达轨迹最高点，最大高度约 25.6 m。
 - 抛体在约 t=4.66 s 时落回地面。
 - 空气阻力使射程显著小于无阻力理想情形。
-</I_CHECKLIST>
-
-<CHECKLIST_NEW>
-- 抛体的水平射程约为 49.92 m。
-</CHECKLIST_NEW>"""
+</I_CHECKLIST>"""
